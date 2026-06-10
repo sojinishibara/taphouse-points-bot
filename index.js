@@ -13,7 +13,7 @@ const GOAL = 5;
 // Google Sheets認証
 async function getSheet() {
   const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
+    credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS.replace(/\n/g, '\\n')),
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
   const sheets = google.sheets({ version: 'v4', auth });
