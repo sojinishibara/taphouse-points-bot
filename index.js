@@ -47,7 +47,7 @@ async function upsertAndAdd(userId, username, addNum) {
       const cur = Number(rows[i][2]) || 0;
       const lastUpdated = rows[i][3] ? new Date(rows[i][3]).toDateString() : '';
       if (lastUpdated === today) {
-        return { points: cur, bonusMsg: '', alreadyStamped: true };
+        return { points: cur, bonusMsg: '', alreadyStamped: true, isNewUser: false };
       }
       let next = cur + addNum;
       let bonusMsg = '';
@@ -62,16 +62,18 @@ async function upsertAndAdd(userId, username, addNum) {
         valueInputOption: 'RAW',
         requestBody: { values: [[next, now]] },
       });
-      return { points: next, bonusMsg, alreadyStamped: false };
+      return { points: next, bonusMsg, alreadyStamped: false, isNewUser: false };
     }
   }
+
+  // 新規ユーザー
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
     range: `${SHEET_NAME}!A:D`,
     valueInputOption: 'RAW',
     requestBody: { values: [[userId, username, addNum, now]] },
   });
-  return { points: addNum, bonusMsg: '', alreadyStamped: false };
+  return { points: addNum, bonusMsg: '', alreadyStamped: false, isNewUser: true };
 }
 
 async function sendMessage(chatId, text) {
@@ -104,6 +106,9 @@ app.post('/webhook', async (req, res) => {
       let reply = `Stamp added!! Currently ${result.points} / ${GOAL}`;
       if (result.bonusMsg) reply += '\n\n' + result.bonusMsg;
       await sendMessage(chatId, reply);
+      if (result.isNewUser) {
+        await sendMessage(chatId, `🎉 Welcome to TAPHOUSE!\n\nJoin our exclusive customer group here:\nhttps://t.me/ibtaphouse\n\nWe look forward to seeing you again! 🍺`);
+      }
       return;
     }
 
