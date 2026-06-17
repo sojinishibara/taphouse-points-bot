@@ -103,7 +103,8 @@ app.post('/webhook', async (req, res) => {
         await sendMessage(chatId, `You've already got your stamp today! 😊\nCome back tomorrow for your next one.\nCurrently ${result.points} / ${GOAL}`);
         return;
       }
-      let reply = `Stamp added!! Currently ${result.points} / ${GOAL}`;
+     const displayPoints = result.bonusMsg ? GOAL : result.points;
+      let reply = `Stamp added!! Currently ${displayPoints} / ${GOAL}`;
       if (result.bonusMsg) reply += '\n\n' + result.bonusMsg;
       await sendMessage(chatId, reply);
       if (result.isNewUser) {
