@@ -76,12 +76,24 @@ async function upsertAndAdd(userId, username, addNum) {
   return { points: addNum, bonusMsg: '', alreadyStamped: false, isNewUser: true };
 }
 
-async function sendMessage(chatId, text) {
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
-  });
+async function sendMessage(chatId, text, retry = 3) {
+  for (let i = 0; i < retry; i++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, text }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (res.ok) return;
+    } catch (err) {
+      console.error(`sendMessage attempt ${i + 1} failed:`, err.message);
+      if (i < retry - 1) await new Promise(r => setTimeout(r, 2000));
+    }
+  }
 }
 
 app.post('/webhook', async (req, res) => {
@@ -103,7 +115,7 @@ app.post('/webhook', async (req, res) => {
         await sendMessage(chatId, `You've already got your stamp today! 😊\nCome back tomorrow for your next one.\nCurrently ${result.points} / ${GOAL}`);
         return;
       }
-     const displayPoints = result.bonusMsg ? GOAL : result.points;
+      const displayPoints = result.bonusMsg ? GOAL : result.points;
       let reply = `Stamp added!! Currently ${displayPoints} / ${GOAL}`;
       if (result.bonusMsg) reply += '\n\n' + result.bonusMsg;
       await sendMessage(chatId, reply);
