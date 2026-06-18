@@ -120,7 +120,9 @@ app.post('/webhook', async (req, res) => {
       if (result.bonusMsg) reply += '\n\n' + result.bonusMsg;
       await sendMessage(chatId, reply);
       if (result.isNewUser) {
-        await sendMessage(chatId, `🎉 Welcome to TAPHOUSE!\n\nJoin our exclusive customer group here:\nhttps://t.me/ibtaphouse\n\nWe look forward to seeing you again! 🍺`);
+        setTimeout(async () => {
+          await sendMessage(chatId, `🎉 Welcome to TAPHOUSE!\n\nJoin our exclusive customer group here:\nhttps://t.me/ibtaphouse\n\nWe look forward to seeing you again! 🍺`);
+        }, 3000);
       }
       return;
     }
