@@ -1,78 +1,97 @@
 const express = require('express');
 const fetch = require('node-fetch');
-const { google } = require('googleapis');
 
 const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const SHEET_NAME = 'Users';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const GOAL = 5;
 
-async function getSheet() {
-  const auth = new google.auth.GoogleAuth({
-    credentials: JSON.parse(process.env.GOOGLE_CREDENTIALS),
-    scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+// Talks to Supabase over its REST API (PostgREST) with the service-role key,
+// which bypasses RLS — this bot is a trusted backend, not a signed-in app
+// user, same role node-fetch already played against the Telegram API.
+async function supabaseRequest(path, options = {}) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
   });
-  const sheets = google.sheets({ version: 'v4', auth });
-  return sheets;
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Supabase request failed (${res.status}): ${text}`);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+async function getCustomer(userId) {
+  const rows = await supabaseRequest(`point_card_customers?telegram_user_id=eq.${encodeURIComponent(userId)}&select=*`);
+  return rows[0] || null;
 }
 
 async function getPoints(userId) {
-  const sheets = await getSheet();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A:D`,
-  });
-  const rows = res.data.values || [];
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === userId) return Number(rows[i][2]) || 0;
-  }
-  return 0;
+  const customer = await getCustomer(userId);
+  return customer ? Number(customer.points) || 0 : 0;
 }
 
-async function upsertAndAdd(userId, username, addNum) {
-  const sheets = await getSheet();
-  const res = await sheets.spreadsheets.values.get({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A:D`,
+// One row per stamp/redeem event — this is what lets the POS dashboard show
+// a customer's visit history and per-store usage counts, which a single
+// running total (the old Google Sheet) couldn't do.
+async function insertEvent({ userId, username, storeId, eventType, pointsAfter }) {
+  await supabaseRequest('point_card_events', {
+    method: 'POST',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({
+      telegram_user_id: userId,
+      telegram_username: username,
+      store_id: storeId || null,
+      event_type: eventType,
+      points_after: pointsAfter,
+    }),
   });
-  const rows = res.data.values || [];
+}
+
+async function upsertAndAdd(userId, username, storeId, addNum) {
   const now = new Date().toISOString();
   const today = new Date().toDateString();
+  const customer = await getCustomer(userId);
 
-  for (let i = 1; i < rows.length; i++) {
-    if (rows[i][0] === userId) {
-      const cur = Number(rows[i][2]) || 0;
-      const lastUpdated = rows[i][3] ? new Date(rows[i][3]).toDateString() : '';
-      if (lastUpdated === today) {
-        return { points: cur, bonusMsg: '', alreadyStamped: true, isNewUser: false };
-      }
-      let next = cur + addNum;
-      let bonusMsg = '';
-      if (next >= GOAL) {
-        bonusMsg = `Thanks so much for coming by as always! 🍺 You've reached ${GOAL} points! Pick your favorite beer and let our staff know 🎁\nWe'll keep brewing great beer, so enjoy your time at TAPHOUSE!`;
-        next = 0;
-      }
-      const rowNum = i + 1;
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SPREADSHEET_ID,
-        range: `${SHEET_NAME}!C${rowNum}:D${rowNum}`,
-        valueInputOption: 'RAW',
-        requestBody: { values: [[next, now]] },
-      });
-      return { points: next, bonusMsg, alreadyStamped: false, isNewUser: false };
+  if (customer) {
+    const cur = Number(customer.points) || 0;
+    const lastUpdated = customer.last_stamped_at ? new Date(customer.last_stamped_at).toDateString() : '';
+    if (lastUpdated === today) {
+      return { points: cur, bonusMsg: '', alreadyStamped: true, isNewUser: false };
     }
+    let next = cur + addNum;
+    let bonusMsg = '';
+    let eventType = 'stamp';
+    if (next >= GOAL) {
+      bonusMsg = `Thanks so much for coming by as always! 🍺 You've reached ${GOAL} points! Pick your favorite beer and let our staff know 🎁\nWe'll keep brewing great beer, so enjoy your time at TAPHOUSE!`;
+      next = 0;
+      eventType = 'redeem';
+    }
+    await supabaseRequest(`point_card_customers?telegram_user_id=eq.${encodeURIComponent(userId)}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({ telegram_username: username, points: next, last_stamped_at: now }),
+    });
+    await insertEvent({ userId, username, storeId, eventType, pointsAfter: next });
+    return { points: next, bonusMsg, alreadyStamped: false, isNewUser: false };
   }
 
   // 新規ユーザー
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${SHEET_NAME}!A:D`,
-    valueInputOption: 'RAW',
-    requestBody: { values: [[userId, username, addNum, now]] },
+  await supabaseRequest('point_card_customers', {
+    method: 'POST',
+    headers: { Prefer: 'return=minimal' },
+    body: JSON.stringify({ telegram_user_id: userId, telegram_username: username, points: addNum, last_stamped_at: now }),
   });
+  await insertEvent({ userId, username, storeId, eventType: 'stamp', pointsAfter: addNum });
   return { points: addNum, bonusMsg: '', alreadyStamped: false, isNewUser: true };
 }
 
@@ -109,8 +128,13 @@ app.post('/webhook', async (req, res) => {
       [msg.from.first_name || '', msg.from.last_name || ''].join(' ').trim();
     const text = (msg.text || '').trim();
 
-    if (/^\/start(?:@\w+)?\s+stamp_/i.test(text)) {
-      const result = await upsertAndAdd(userId, username, 1);
+    // Each store's QR encodes its own deep link (.../start=stamp_<store id>),
+    // so the store id rides along in the /start payload and gets logged with
+    // the event — this is the only per-store signal the bot ever sees.
+    const startMatch = text.match(/^\/start(?:@\w+)?\s+stamp_(\S+)/i);
+    if (startMatch) {
+      const storeId = startMatch[1];
+      const result = await upsertAndAdd(userId, username, storeId, 1);
       if (result.alreadyStamped) {
         await sendMessage(chatId, `You've already got your stamp today! 😊\nCome back tomorrow for your next one.\nCurrently ${result.points} / ${GOAL}`);
         return;
