@@ -26,8 +26,12 @@ async function supabaseRequest(path, options = {}) {
     const text = await res.text().catch(() => '');
     throw new Error(`Supabase request failed (${res.status}): ${text}`);
   }
-  if (res.status === 204) return null;
-  return res.json();
+  // Prefer: return=minimal makes writes come back 201 Created with an empty
+  // body (not 204), so res.json() on that would throw a JSON parse error —
+  // read as text first and only parse if there's actually content.
+  const text = await res.text();
+  if (!text) return null;
+  return JSON.parse(text);
 }
 
 async function getCustomer(userId) {
